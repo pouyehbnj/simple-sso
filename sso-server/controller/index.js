@@ -151,22 +151,34 @@ const doLogin = (req, res, next) => {
   // but the goal is not to do the same in this right now,
   // like checking with Datebase and all, we are skiping these section
   const { email, password } = req.body;
-  if (!(userDB[email] && password === userDB[email].password)) {
+  search(email, password).then(result => {
+    userDB[`${email}`]= {
+      password: password,
+      userId: encodedId(), // incase you dont want to share the user-email.
+      appPolicy: {
+        sso_consumer: { role: "admin", shareEmail: true },
+        simple_sso_consumer: { role: "user", shareEmail: false }
+      }
+    }
+  
+    const { serviceURL } = req.query;
+    const id = encodedId();
+    req.session.user = id;
+    console.log("session is filled")
+    console.log(req.session)
+    sessionUser[id] = email;
+    if (serviceURL == null) {
+      return res.redirect("/");
+    }
+    const url = new URL(serviceURL);
+    const intrmid = encodedId();
+    storeApplicationInCache(url.origin, id, intrmid);
+    console.log("going : "+`${serviceURL}?ssoToken=${intrmid}`)
+    return res.redirect(`${serviceURL}?ssoToken=${intrmid}`);
+  }).catch(err => {
+    console.log(err)
     return res.status(404).json({ message: "Invalid email and password" });
-  }
-
-  // else redirect
-  const { serviceURL } = req.query;
-  const id = encodedId();
-  req.session.user = id;
-  sessionUser[id] = email;
-  if (serviceURL == null) {
-    return res.redirect("/");
-  }
-  const url = new URL(serviceURL);
-  const intrmid = encodedId();
-  storeApplicationInCache(url.origin, id, intrmid);
-  return res.redirect(`${serviceURL}?ssoToken=${intrmid}`);
+  })
 };
 
 const login = (req, res, next) => {
@@ -199,5 +211,92 @@ const login = (req, res, next) => {
     title: "SSO-Server | Login"
   });
 };
+
+async function search(username, password) {
+  return new Promise(async (res, rej) => {
+    console.log("user:"+username+" passwd:"+password)
+    var result = "";    // To send back to the client
+
+    var client = ldap.createClient({
+      url: "ldap://193.176.243.52:389/"
+    });
+    console.log("cn=admin,dc=mycompany,dc=com" + "   " + "admin")
+    client.bind("cn=admin,dc=mycompany,dc=com","admin", function (err) {
+      if (err) {
+        result += "Reader bind failed " + err;
+        //res.send(result);
+        console.log(result)
+        rej()
+      }
+
+      result += "Reader bind succeeded\n";
+      console.log(result)
+      var filter = `(uid=${username})`;
+      var base = 'cn=Bill Gates,ou=users,dc=mycompany,dc=com';
+      result += `LDAP filter: ${filter}\n`;
+      console.log(result)
+      client.search(base, { filter: filter, scope: "sub" },
+        (err, searchRes) => {
+          var searchList = [];
+
+          if (err) {
+            result += "Search failed " + err;
+            console.log(result)
+            //res.send(result);
+            rej()
+          }
+
+          searchRes.on("searchEntry", (entry) => {
+            result += "Found entry: " + entry + "\n";
+            searchList.push(entry);
+          });
+
+          searchRes.on("error", (err) => {
+            result += "Search failed with " + err;
+            console.log(result)
+            // res.send(result);
+            rej()
+          });
+
+          searchRes.on("end", (retVal) => {
+            result += "Search results length: " + searchList.length + "\n";
+            for (var i = 0; i < searchList.length; i++)
+              result += "DN:" + searchList[i].objectName + "\n";
+            result += "Search retval:" + retVal + "\n";
+
+            if (searchList.length === 1) {
+              client.bind(searchList[0].objectName, password, function (err) {
+                if (err) {
+                  result += "Bind with real credential error: " + err;
+                  console.log(result)
+                  rej()
+                }
+
+                else {
+                  result += "Bind with real credential is a success";
+                  console.log(result)
+                  res()
+                }
+
+
+                // res.send(result);
+              });  // client.bind (real credential)
+
+
+            } else { // if (searchList.length === 1)
+              result += "No unique user to bind";
+              console.log(result)
+              rej()
+              //res.send(result);
+            }
+
+          });   // searchRes.on("end",...)
+
+        });   // client.search
+
+    }); // client.bind  (reader account)
+  })
+
+}
 
 module.exports = Object.assign({}, { doLogin, login, verifySsoToken });
